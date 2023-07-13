@@ -198,3 +198,4 @@ void update_pagetable_3(pagetable_t new_pagetable, pagetable_t old_pagetable, in
 }
 ```
 至此，全部完成实验要求，测试结果如下：
+![](https://github.com/2351889401/6.S081-Lab-Pagetables/blob/main/images/result2.png)  
