@@ -38,7 +38,7 @@ void vmprint(pagetable_t pagetable, int level) {
 
 
 
-（1）为每个进程的新页表拷贝（**kernel pagetable**）  
+（1）为每个进程的新页表拷贝（**kernel pagetable**），需要提前考虑内核页表有哪些内容：内核页表初始化时的全部内容 + 所有的内核栈  
 “**kernel/vm.c**”中加入函数“**copy_kvminit()**”
 ```
 //为每个进程拷贝当前的 kernel pagetbale
@@ -92,3 +92,109 @@ if(p->state == RUNNABLE) {
     sfence_vma();
 }
 ```
+在“**kernel/vm.c**”中加入函数“**free_copy_kernel_pagetable()**”，并在“**kernel/proc.c**”的“**freeproc()**”函数中调用以释放该新页表  
+* 注意，释放该新页表，只需要释放页表相关的页面，而不需要释放任何其他的物理内存，因为：首先内核的代码段和数据段不需要释放；其次，用户进程的物理内存，在进程释放时原来就会释放，这里再释放就会出问题。
+```
+void free_copy_kernel_pagetable(pagetable_t pagetable, int now_level) {
+  int i;
+  pte_t pte;
+  for(i=0; i<512; i++) {
+    pte = pagetable[i];
+    if(pte & PTE_V) {
+      if(now_level != 3) free_copy_kernel_pagetable((pagetable_t)PTE2PA(pte), now_level+1);
+    }
+    pagetable[i] = 0;
+  }
+  kfree((void*)pagetable);
+}
+```
+在在“**kernel/proc.c**”的“**freeproc()**”函数中调用它：
+```
+// free a proc structure and the data hanging from it,
+// including user pages.
+// p->lock must be held.
+static void
+freeproc(struct proc *p)
+{
+  if(p->trapframe)
+    kfree((void*)p->trapframe);
+  p->trapframe = 0;
+  if(p->pagetable)
+    proc_freepagetable(p->pagetable, p->sz); //这里通过调用uvmunmap()函数实现用户页表和内存的释放 所以我们的释放函数不需要释放页表以外的内存
+  p->pagetable = 0;
+  p->sz = 0;
+  p->pid = 0;
+  p->parent = 0;
+  p->name[0] = 0;
+  p->chan = 0;
+  p->killed = 0;
+  p->xstate = 0;
+  p->state = UNUSED;
+  // copy_kernel_pagetable里面有的内容: 所有的kernel pagetable里的内容 + 内核栈 + user mappings
+  // 需要的方式是将中间所涉及到的所有页表全部清空 然后释放 不去释放真正的物理内存
+  free_copy_kernel_pagetable(p->copy_kernel_pagetable, 1);
+}
+```
+  
+（2）在新页表中记录下用户页表（**user pagetable**）的全部内容；并且每当用户映射发生改变时，相应的改变应当体现在新页表中（这里主要体现在“**kernel/exec.c/exec()**”，“**kernel/proc.c/fork()**”，“**kernel/proc.c/growproc()**”，“**kernel/proc.c/userinit()**”这些函数中）  
+* 注意，实验内容的网页上说，用户虚拟地址空间的最大限制是“**PLIC**”的“**0xC000000**”，而书上的“**CLINT**”的地址是“**0x2000000**”，在实验中我还是限制最大空间不能超过“**CLINT**”，但是仍然通过了全部的测试
+所以，这一步骤的核心是在新页表中记录下用户页表（**user pagetable**）的全部内容（与内核页表（**kernel pagetable**）的区别在于内核页表不会动态变化，用户页表可能会变化）
+在实现之前，考虑以下4种情况：（**old**表示用户页表，**new**表示新页表，“**无**”表示该页表项为“**0**”，“**有**”表示该页表项不为“**0**”）  
+old    new    做法  
+无     无     continue  
+无     有     （递归的）释放新页表的页表项  
+有     有     如果当前是1级或2级查询，递归进入下一级；如果当前是3级查询，让新页表和用户页表指向相同的物理地址（下面解释）  
+有     无     如果当前是1级或2级查询，为新页表申请下一级的页表空间，在相同的索引处登记，递归进入下一级；如果当前是3级查询，让新页表和用户页表指向相同的物理地址
+
+这里解释下上面的 “**有     有     如果当前是1级或2级查询，递归进入下一级；如果当前是3级查询，让新页表和用户页表指向相同的物理地址（下面解释）**”的原因：
+如果是3级查询，可能存在这样的情况：原来用户页表和新页表指向相同的物理地址，但是释放了那一块内存，并且申请了新的物理内存，让原来的虚拟地址指向新的物理地址。这时，用户页表记录的是对的，而新页表还没有更改，必须和用户页表一致。
+
+```
+//目的是让new_pagetable和old_pagetable在 0x2000000 以下的地址存在相同的映射
+uint64 LIMIT = CLINT;
+void update_pagetable_3(pagetable_t new_pagetable, pagetable_t old_pagetable, int level, uint64 preva) {
+  int i;
+  for(i=0; i<512; i++) {
+    uint64 va = (i << (12 + 9 * (3-level))) | preva; //这一句话很关键，preva是之前等级（1级、2级）查询的虚拟地址，通过“或”运算，让之前等级的虚拟地址和当前的虚拟地址合并
+    if(va >= LIMIT) break;
+    pte_t new_pte = new_pagetable[i];
+    pte_t old_pte = old_pagetable[i];
+    if((old_pte & PTE_V) == 0) {
+      if((new_pte & PTE_V) == 0) continue; //无 无 的情况
+      else { //无 有 的情况
+        if(level < 3) free_copy_kernel_pagetable((pagetable_t)PTE2PA(new_pte), level+1);
+        new_pagetable[i] = 0;
+      }
+    }
+    else {
+      if((new_pte & PTE_V) == 0) { //有 无 的情况
+        if(level < 3) {
+          char* new_pa = (char*) kalloc();
+          memset(new_pa, 0, PGSIZE);
+          new_pagetable[i] = PA2PTE(new_pa);
+          int perm = PTE_FLAGS(old_pte) & (~PTE_U); // PTE_U权限位必须置0才能在内核中使用
+          new_pagetable[i] |= perm;
+          update_pagetable_3((pagetable_t)PTE2PA(new_pagetable[i]), (pagetable_t)PTE2PA(old_pte), level+1, va);
+        }
+        else {
+          uint64 new_pa = PTE2PA(old_pte);
+          new_pagetable[i] = PA2PTE(new_pa);
+          int perm = PTE_FLAGS(old_pte) & (~PTE_U);
+          new_pagetable[i] |= perm;
+        }
+      }
+      else{ //有 有 的情况
+        if(level < 3) update_pagetable_3((pagetable_t)PTE2PA(new_pte), (pagetable_t)PTE2PA(old_pte), level+1, va);
+        else {//这种情况下 相同位置的映射可能不同
+          uint64 new_pa = PTE2PA(old_pte);
+          new_pagetable[i] = PA2PTE(new_pa);
+          int perm = PTE_FLAGS(old_pte) & (~PTE_U);
+          new_pagetable[i] |= perm;
+        }
+      }
+    }
+  }
+
+}
+```
+至此，全部完成实验要求，测试结果如下：
