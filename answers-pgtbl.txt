@@ -1,0 +1,25 @@
+1.Explain the output of vmprint in terms of Fig 3-4 from the text. 
+What does page 0 contain? What is in page 2? 
+When running in user mode, could the process read/write the memory mapped by page 1?
+
+Answers:
+Page 0 contains text and data of the 'init' process.
+Page 1 is a guard page where PTE_U is set 0, so the process can't read/write the memory mapped by page 1.
+Page 2 is the user stack page which contains the command-line arguments, some pointers to the arguments, return PC for main, and so on.
+
+2.Explain why the third test srcva + len < srcva is necessary in copyin_new(): 
+give values for srcva and len for which the first two test fail (i.e., they will not cause to return -1)
+but for which the third one is true (resulting in returning -1).
+
+Answers:
+(1)If len is negative, memmove in copyin_new will not copy any content to dst.
+(2)If len is the maximum value of uint64 (0xffffffffffffffff), src+len<src, which will cause the instructions and data of the kernel to move, 
+leading to a kernel crash.
+
+
+Some insights:
+Completing the pgtbl experiment took me a long time because although I understood the content, 
+I wasn't proficient in it. Many functions in vm.c give me inspiration, and I want to express my gratitude here. 
+Due to this experiment, I haven't watched the course videos for a long time, but now I think I can continue to move forward. 
+Thank you very much for providing such great platform and experiments, which help me to have a deeper understanding of what happens in the kernel. 
+Sincerely thank you!
