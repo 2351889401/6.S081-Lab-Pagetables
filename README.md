@@ -38,7 +38,7 @@ void vmprint(pagetable_t pagetable, int level) {
 
 
 
-（1）为每个进程的新页表拷贝（**kernel pagetable**），需要提前考虑内核页表有哪些内容：内核页表初始化时的全部内容 + 所有的内核栈  
+（1）为每个进程的新页表拷贝**kernel pagetable**，需要提前考虑内核页表有哪些内容：内核页表初始化时的全部内容 + 所有的内核栈  
 “**kernel/vm.c**”中加入函数“**copy_kvminit()**”
 ```
 //为每个进程拷贝当前的 kernel pagetbale
