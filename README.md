@@ -69,7 +69,7 @@ for(pp = proc; pp < &proc[NPROC]; pp++) {
     mappages(p->copy_kernel_pagetable, va, PGSIZE, pa, PTE_R | PTE_W);
 }
 ```
-在“**kernel/proc.c**”中的“**scheduler()**”函数中，如果当前有进程可以执行，**MMU**使用该进程的新页表；另外，如果没有进程执行的时候，使用内核页表（**因为没有进程执行的时候，要注意不能访问内核页表中没有注册的虚拟地址，这样是为了保证隔离性**）
+在“**kernel/proc.c**”中的“**scheduler()**”函数中，如果当前有进程可以执行，**MMU**使用该进程的新页表；另外，如果没有进程执行的时候，使用内核页表（**因为这种情况下不使用内核页表的话，在内核代码中执行的时候比如访问某些变量，会造成缺页异常，内核就崩溃了**）
 ```
 if(p->state == RUNNABLE) {
     // Switch to chosen process.  It is the process's job
